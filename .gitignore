@@ -1,0 +1,28 @@
+# Environment and secrets
+.env
+credentials/*.json
+service_account.json
+*.json.key
+
+# Python
+.venv/
+env/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Frontend dependencies and builds
+node_modules/
+frontend/node_modules/
+frontend/dist/
+
+# Generated outputs
+outputs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Tooling
+.claude/

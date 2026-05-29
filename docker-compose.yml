@@ -1,0 +1,13 @@
+services:
+  bikestudio:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - AZURE_BLOB_URL=${AZURE_BLOB_URL:-}
+    volumes:
+      # Persist generated posters across container restarts
+      - ./outputs:/app/outputs
+      # Mount backgrounds folder so you can add images without rebuilding
+      - ./assets/backgrounds:/app/assets/backgrounds
