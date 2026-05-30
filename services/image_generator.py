@@ -199,9 +199,11 @@ async def generate_image(
 
     target_width, target_height = RESOLUTION_MAP.get(platform_name, (3840, 3840))
 
-    # ── Step 1: Gemini brief ──────────────────────────────────────────────────
-    print("[AI ENGINE] Generating poster brief with Gemini 2.5 Flash …")
-    brief = await ai_pipeline.generate_brief(bike_name or bike_id, festival, platform_name)
+    # ── Step 1: Gemini Vision brief (bike image + festival) ───────────────────
+    print("[AI ENGINE] Generating bike-aware brief with Gemini 2.5 Flash Vision …")
+    brief = await ai_pipeline.generate_brief(
+        bike_name or bike_id, festival, platform_name, bike_path
+    )
     print(f"[AI ENGINE] Brief: {brief[:140]} …")
 
     # ── Step 2: Imagen background ─────────────────────────────────────────────

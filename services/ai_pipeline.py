@@ -1,5 +1,6 @@
 import io
 import os
+from pathlib import Path
 from PIL import Image
 from google import genai
 from google.genai import types
@@ -21,6 +22,13 @@ _FESTIVAL_CUES = {
     "IPL":              "packed cricket stadium with floodlights blazing, crowd waving team colours, electric blue and green neon glow, sports energy, dramatic night sky, celebration confetti",
 }
 
+_MIME_MAP = {
+    ".png":  "image/png",
+    ".jpg":  "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+}
+
 
 def _get_client():
     project  = os.getenv("GOOGLE_CLOUD_PROJECT",  "").strip()
@@ -30,28 +38,53 @@ def _get_client():
     return genai.Client(vertexai=True, project=project, location=location)
 
 
-async def generate_brief(bike_model: str, festival: str, platform_name: str) -> str:
-    client = _get_client()
-    cues   = _FESTIVAL_CUES.get(festival, festival)
+async def generate_brief(
+    bike_model: str,
+    festival: str,
+    platform_name: str,
+    bike_image_path,          # Path | str — actual bike photo for Vision analysis
+) -> str:
+    client    = _get_client()
+    cues      = _FESTIVAL_CUES.get(festival, festival)
+    bike_path = Path(bike_image_path)
+    mime_type = _MIME_MAP.get(bike_path.suffix.lower(), "image/png")
 
-    prompt = (
-        f"You are a creative director at a premium automotive marketing agency. "
-        f"Write a vivid photorealistic scene description for an AI image generation model.\n\n"
-        f"Purpose: Background image for a Hero MotoCorp {bike_model} promotional poster.\n"
-        f"Festival/Campaign: {festival}\n"
-        f"Atmosphere: {cues}\n"
-        f"Platform format: {platform_name}\n\n"
-        f"Hard rules:\n"
-        f"- NO motorcycles, NO vehicles, NO people, NO text, NO logos\n"
-        f"- Must have a clear, flat, visible ground surface (road, floor, or ground)\n"
-        f"- Photorealistic, high-end commercial advertising photography style\n"
-        f"- 8K resolution, dramatic professional lighting, cinematic depth of field\n\n"
-        f"Output: ONLY the image generation prompt text (120-160 words). "
+    print("[AI PIPELINE] Reading bike image for Gemini Vision analysis …")
+    with open(bike_path, "rb") as f:
+        image_bytes = f.read()
+
+    image_part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
+    text_part  = types.Part.from_text(text=(
+        f"You are a creative director at a premium automotive marketing agency.\n\n"
+        f"Step 1 — Study this motorcycle image carefully:\n"
+        f"  • Note its EXACT primary and secondary colours\n"
+        f"  • Identify its style: sporty / commuter / scooter / adventure / premium\n"
+        f"  • Capture its energy and visual personality\n\n"
+        f"Step 2 — Write a vivid photorealistic BACKGROUND scene description for "
+        f"an AI image generator (Imagen 4). This scene sits BEHIND this exact bike "
+        f"in a Hero MotoCorp {festival} marketing poster for {platform_name}.\n\n"
+        f"Festival atmosphere cues: {cues}\n\n"
+        f"Scene requirements:\n"
+        f"  • Color-match the scene's lighting and tones to COMPLEMENT the bike's "
+        f"actual colours you observed\n"
+        f"  • Match the scene energy to the bike's style and personality\n"
+        f"  • Rich {festival} festival atmosphere\n"
+        f"  • Clear flat visible ground surface (road / floor) where the bike will stand\n"
+        f"  • NO motorcycles, NO vehicles, NO people, NO text, NO logos\n"
+        f"  • Photorealistic 8K commercial advertising photography style\n"
+        f"  • Cinematic depth of field, dramatic professional lighting\n\n"
+        f"Output: ONLY the Imagen scene prompt text (130-160 words). "
         f"No headings, no explanation, no quotes."
-    )
+    ))
 
-    response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
-    return response.text.strip()
+    print("[AI PIPELINE] Sending bike image + festival brief to Gemini 2.5 Flash Vision …")
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=[image_part, text_part],
+    )
+    brief = response.text.strip()
+    print(f"[AI PIPELINE] Vision brief ready ({len(brief.split())} words)")
+    return brief
 
 
 async def generate_background(
