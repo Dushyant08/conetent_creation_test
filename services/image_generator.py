@@ -1,4 +1,5 @@
 import json
+import numpy as np
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageChops
 from rembg import remove, new_session
@@ -230,46 +231,61 @@ async def generate_image(
     paste_x  = (target_width - bike_w) // 2
     paste_y  = ground_y - bike_h
 
-    # ── Step 5: Shadow system ─────────────────────────────────────────────────
-    shadow_cx = paste_x + bike_w // 2
+    # ── Step 5: Tyre detection + shadow system ────────────────────────────────
+    # Scan bottom 15% of bike pixels to find actual left / right tyre centres.
+    # Using pixel data avoids hardcoded percentages that break per bike model.
+    alpha_arr   = np.array(bike_scaled.getchannel("A"))
+    bottom_h    = max(int(bike_h * 0.15), 20)
+    bottom_zone = alpha_arr[bike_h - bottom_h:, :]
+    col_sums    = bottom_zone.sum(axis=0).astype(float)
+    max_sum     = col_sums.max()
 
-    def _ellipse_shadow(w, h, cx, blur, alpha):
-        img = Image.new("RGBA", (target_width, target_height), (0, 0, 0, 0))
-        ImageDraw.Draw(img).ellipse(
+    if max_sum > 0:
+        thresh     = max_sum * 0.20
+        sig_cols   = np.where(col_sums > thresh)[0]
+        mid        = bike_w // 2
+        left_cols  = sig_cols[sig_cols <= mid]
+        right_cols = sig_cols[sig_cols >  mid]
+        tyre_L_cx  = paste_x + int(left_cols.mean())  if len(left_cols)  > 5 else paste_x + int(bike_w * 0.25)
+        tyre_R_cx  = paste_x + int(right_cols.mean()) if len(right_cols) > 5 else paste_x + int(bike_w * 0.75)
+    else:
+        tyre_L_cx = paste_x + int(bike_w * 0.25)
+        tyre_R_cx = paste_x + int(bike_w * 0.75)
+
+    print(f"[AI ENGINE] Tyre centres — L:{tyre_L_cx - paste_x}px  R:{tyre_R_cx - paste_x}px  (bike_w={bike_w}px)")
+
+    bike_cx = paste_x + bike_w // 2
+
+    def _shadow_ellipse(w, h, cx, blur, alpha):
+        layer = Image.new("RGBA", (target_width, target_height), (0, 0, 0, 0))
+        ImageDraw.Draw(layer).ellipse(
             [cx - w // 2, ground_y - h // 2,
              cx + w // 2, ground_y + h // 2],
             fill=(0, 0, 0, alpha),
         )
-        return img.filter(ImageFilter.GaussianBlur(blur))
+        return layer.filter(ImageFilter.GaussianBlur(blur))
 
-    mega = _ellipse_shadow(
-        int(bike_w * 1.30), int(bike_h * 0.16),
-        shadow_cx, max(int(bike_w * 0.18), 55), 80,
+    # 1. Soft ambient — flat wide oval under entire bike.
+    #    Height uses bike_w (not bike_h) so it stays flat for any bike aspect ratio.
+    ambient = _shadow_ellipse(
+        int(bike_w * 1.05), int(bike_w * 0.055),
+        bike_cx, max(int(bike_w * 0.12), 35), 65,
     )
 
-    sil_h   = max(int(bike_h * 0.26), 40)
-    squish  = bike_scaled.getchannel("A").resize((bike_w, sil_h), Image.Resampling.LANCZOS)
-    sil_img = Image.new("RGBA", (bike_w, sil_h), (0, 0, 0, 210))
-    sil_img.putalpha(squish)
-    sil_img = sil_img.filter(ImageFilter.GaussianBlur(max(int(bike_w * 0.018), 12)))
-    silhouette = Image.new("RGBA", (target_width, target_height), (0, 0, 0, 0))
-    silhouette.paste(sil_img, (paste_x, ground_y - sil_h // 2), mask=sil_img)
-
-    front_cx = paste_x + int(bike_w * 0.22)
-    front    = _ellipse_shadow(
-        int(bike_w * 0.17), int(bike_h * 0.038),
-        front_cx, max(int(bike_w * 0.018), 7), 245,
+    # 2. Left tyre contact — tight dark patch at the detected tyre centre
+    contact_L = _shadow_ellipse(
+        int(bike_w * 0.17), int(bike_w * 0.032),
+        tyre_L_cx, max(int(bike_w * 0.008), 4), 230,
     )
 
-    rear_cx = paste_x + int(bike_w * 0.72)
-    rear    = _ellipse_shadow(
-        int(bike_w * 0.19), int(bike_h * 0.038),
-        rear_cx, max(int(bike_w * 0.018), 7), 245,
+    # 3. Right tyre contact — tight dark patch at the detected tyre centre
+    contact_R = _shadow_ellipse(
+        int(bike_w * 0.19), int(bike_w * 0.032),
+        tyre_R_cx, max(int(bike_w * 0.008), 4), 230,
     )
 
-    shadow_canvas    = Image.alpha_composite(mega, silhouette)
-    shadow_canvas    = Image.alpha_composite(shadow_canvas, front)
-    shadow_canvas    = Image.alpha_composite(shadow_canvas, rear)
+    shadow_canvas    = Image.alpha_composite(ambient, contact_L)
+    shadow_canvas    = Image.alpha_composite(shadow_canvas, contact_R)
     composite_canvas = Image.alpha_composite(canvas_bg, shadow_canvas)
 
     # ── Step 6: Paste bike ────────────────────────────────────────────────────
@@ -297,13 +313,13 @@ async def generate_image(
     above_line   = int(bike_w * 0.015)   # tiny bit above ground_y to catch tyre edge
     shadow_depth = int(bike_w * 0.14)    # how far below ground_y the shadow zone extends
 
-    mask_draw.ellipse([                                             # front tyre zone
-        front_cx - int(bike_w * 0.14), ground_y - above_line,
-        front_cx + int(bike_w * 0.14), ground_y + shadow_depth,
+    mask_draw.ellipse([                                             # left tyre zone
+        tyre_L_cx - int(bike_w * 0.14), ground_y - above_line,
+        tyre_L_cx + int(bike_w * 0.14), ground_y + shadow_depth,
     ], fill=255)
-    mask_draw.ellipse([                                             # rear tyre zone
-        rear_cx - int(bike_w * 0.16), ground_y - above_line,
-        rear_cx + int(bike_w * 0.16), ground_y + shadow_depth,
+    mask_draw.ellipse([                                             # right tyre zone
+        tyre_R_cx - int(bike_w * 0.16), ground_y - above_line,
+        tyre_R_cx + int(bike_w * 0.16), ground_y + shadow_depth,
     ], fill=255)
 
     print("[AI ENGINE] Sending composite + mask to Imagen inpainting …")
