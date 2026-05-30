@@ -94,8 +94,8 @@ async def generate_background(
     aspect_ratio = _ASPECT_MAP.get(platform_name, "1:1")
 
     for model_id in (
-        "imagen-4.0-generate-preview-06-06",
         "imagen-3.0-generate-001",
+        "imagen-3.0-fast-generate-001",
     ):
         try:
             print(f"[AI PIPELINE] Trying {model_id} …")
@@ -173,9 +173,10 @@ async def inpaint_ground_contact(
                 ),
                 types.MaskReferenceImage(
                     reference_id=2,
+                    reference_image=types.Image(image_bytes=mask_bytes),
                     config=types.MaskReferenceConfig(
                         mask_mode="MASK_MODE_USER_PROVIDED",
-                        user_provided_mask=types.Image(image_bytes=mask_bytes),
+                        dilation=0,
                     ),
                 ),
             ],
