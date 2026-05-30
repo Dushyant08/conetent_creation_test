@@ -117,3 +117,91 @@ async def generate_background(
     raise RuntimeError(
         "All Imagen models failed — check Vertex AI access, billing, and model availability in your region."
     )
+
+
+def _to_png_bytes(img: Image.Image) -> bytes:
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+async def inpaint_ground_contact(
+    composite: Image.Image,
+    mask: Image.Image,
+    festival: str,
+    target_width: int,
+    target_height: int,
+) -> Image.Image:
+    """
+    Sends the composite + B&W mask to Imagen inpainting.
+      • White mask  = tyre contact zones  → AI paints realistic shadows / reflections
+      • Black mask  = bike + background   → completely preserved, not touched
+    Returns a new composite with AI-improved ground contact.
+    Falls back to the original composite if the API call fails.
+    """
+    client = _get_client()
+
+    # Downscale to 1024 px (Imagen editing limit)
+    api_size = 1024
+    scale    = api_size / max(target_width, target_height)
+    api_w, api_h = int(target_width * scale), int(target_height * scale)
+
+    comp_small = composite.convert("RGB").resize((api_w, api_h), Image.Resampling.LANCZOS)
+    mask_small = mask.resize((api_w, api_h), Image.Resampling.NEAREST)
+
+    comp_bytes = _to_png_bytes(comp_small)
+    mask_bytes = _to_png_bytes(mask_small)
+
+    prompt = (
+        f"Photorealistic motorcycle tyre contact shadows and ground surface lighting. "
+        f"In the white masked areas only: paint dark tyre-shaped contact shadow patches "
+        f"exactly where the tyres press against the ground surface. "
+        f"Add subtle specular ground reflections and light pooling consistent with the "
+        f"{festival} festival lighting already visible in the scene. "
+        f"The motorcycle must look heavy and firmly grounded — not floating. "
+        f"Keep all colours and textures outside the masked area completely unchanged."
+    )
+
+    try:
+        response = client.models.edit_image(
+            model="imagen-3.0-capability-001",
+            prompt=prompt,
+            reference_images=[
+                types.RawReferenceImage(
+                    reference_id=1,
+                    reference_image=types.Image(image_bytes=comp_bytes),
+                ),
+                types.MaskReferenceImage(
+                    reference_id=2,
+                    config=types.MaskReferenceConfig(
+                        mask_mode="MASK_MODE_USER_PROVIDED",
+                        user_provided_mask=types.Image(image_bytes=mask_bytes),
+                    ),
+                ),
+            ],
+            config=types.EditImageConfig(
+                edit_mode="EDIT_MODE_INPAINT_INSERTION",
+                number_of_images=1,
+            ),
+        )
+
+        inpainted_bytes = response.generated_images[0].image.image_bytes
+        inpainted_small = Image.open(io.BytesIO(inpainted_bytes)).convert("RGBA")
+
+        # Scale inpainted result back to full canvas resolution
+        inpainted_full = inpainted_small.resize(
+            (target_width, target_height), Image.Resampling.LANCZOS
+        )
+
+        # Blend: inpainted pixels only where mask is WHITE; original everywhere else
+        # This guarantees the bike (black mask) stays pixel-perfect from PIL
+        mask_full  = mask.resize((target_width, target_height), Image.Resampling.LANCZOS).convert("L")
+        comp_rgba  = composite.convert("RGBA")
+        result     = Image.composite(inpainted_full, comp_rgba, mask_full)
+
+        print("[AI PIPELINE] Ground contact inpainting applied")
+        return result
+
+    except Exception as exc:
+        print(f"[AI PIPELINE] Inpainting skipped (PIL-only fallback): {exc}")
+        return composite

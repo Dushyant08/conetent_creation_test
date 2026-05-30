@@ -287,7 +287,31 @@ async def generate_image(
     combined = ImageChops.multiply(reflection.getchannel("A"), grad)
     composite_canvas.paste(reflection, (paste_x, ground_y), mask=combined)
 
-    # ── Step 8: Logos ─────────────────────────────────────────────────────────
+    # ── Step 8: Inpaint tyre contact zones ────────────────────────────────────
+    # Build B&W mask:
+    #   WHITE (255) = tyre contact zones → Imagen adds realistic shadows/reflections
+    #   BLACK (0)   = bike + rest of scene → completely untouched
+    print("[AI ENGINE] Building tyre contact mask …")
+    contact_mask = Image.new("L", (target_width, target_height), 0)
+    mask_draw    = ImageDraw.Draw(contact_mask)
+    above_line   = int(bike_w * 0.015)   # tiny bit above ground_y to catch tyre edge
+    shadow_depth = int(bike_w * 0.14)    # how far below ground_y the shadow zone extends
+
+    mask_draw.ellipse([                                             # front tyre zone
+        front_cx - int(bike_w * 0.14), ground_y - above_line,
+        front_cx + int(bike_w * 0.14), ground_y + shadow_depth,
+    ], fill=255)
+    mask_draw.ellipse([                                             # rear tyre zone
+        rear_cx - int(bike_w * 0.16), ground_y - above_line,
+        rear_cx + int(bike_w * 0.16), ground_y + shadow_depth,
+    ], fill=255)
+
+    print("[AI ENGINE] Sending composite + mask to Imagen inpainting …")
+    composite_canvas = await ai_pipeline.inpaint_ground_contact(
+        composite_canvas, contact_mask, festival, target_width, target_height
+    )
+
+    # ── Step 9: Logos ─────────────────────────────────────────────────────────
     hero_logo_path = Path("assets/hero-logo.png")
     if hero_logo_path.exists():
         with Image.open(hero_logo_path) as hero_logo:
@@ -313,7 +337,7 @@ async def generate_image(
                                            mask=bs)
                 break
 
-    # ── Save base canvas (no text) ─────────────────────────────────────────────
+    # ── Step 10: Save base canvas (no text) ───────────────────────────────────
     stem          = Path(filename).stem
     base_filename = f"{stem}.png"
     composite_canvas.save(str(BASE_DIR / base_filename), format="PNG")
